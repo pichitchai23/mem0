@@ -1,0 +1,35 @@
+services:
+  mem0-api:
+    build:
+      context: ./server
+    container_name: mem0-api
+    ports:
+      - "8000:8000"
+    environment:
+      VECTOR_STORE: qdrant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: mem0
+    depends_on:
+      - qdrant
+
+  qdrant:
+    image: qdrant/qdrant:v1.8.3
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  openmemory-ui:
+    build:
+      context: ./openmemory/ui
+    container_name: openmemory-ui
+    ports:
+      - "3000:3000"
+    environment:
+      MEM0_API_URL: http://mem0-api:8000
+    depends_on:
+      - mem0-api
+
+volumes:
+  qdrant_data:
