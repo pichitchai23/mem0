@@ -1,5 +1,7 @@
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -14,44 +16,102 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Load environment variables
 load_dotenv()
 
+# รอให้ services อื่นๆ พร้อม
+logging.info("Waiting for services to be ready...")
+time.sleep(10)
+logging.info("Starting mem0-api...")
 
+# --- Load Configurations from Environment ---
+
+# 1. Vector Store Config (Qdrant or Postgres)
+VECTOR_STORE_PROVIDER = os.environ.get("VECTOR_STORE", "qdrant")
+
+# Qdrant Vars
+# แก้ไข: ใช้แค่ URL อย่างเดียว ตัด host/port ทิ้งเพื่อไม่ให้ชนกัน
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
+QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "mem0")
+
+# Postgres Vars (Keep for backup)
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres")
-POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
+POSTGRES_PORT = int(os.environ.get("POSTGRES_PORT", 5432))
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "postgres")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "postgres")
 POSTGRES_COLLECTION_NAME = os.environ.get("POSTGRES_COLLECTION_NAME", "memories")
 
+# 2. Graph Store Config
 NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USERNAME = os.environ.get("NEO4J_USERNAME", "neo4j")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "mem0graph")
 
-MEMGRAPH_URI = os.environ.get("MEMGRAPH_URI", "bolt://localhost:7687")
-MEMGRAPH_USERNAME = os.environ.get("MEMGRAPH_USERNAME", "memgraph")
-MEMGRAPH_PASSWORD = os.environ.get("MEMGRAPH_PASSWORD", "mem0graph")
-
+# 3. LLM & Embedder Config
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4")
+
+# Ollama Config
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+OLLAMA_EMBEDDING_MODEL = os.environ.get("OLLAMA_EMBEDDING_MODEL", "bge-m3")
+
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
 
-DEFAULT_CONFIG = {
-    "version": "v1.1",
-    "vector_store": {
+# --- สร้างไดเรกทอรีสำหรับ history database ---
+history_dir = Path(HISTORY_DB_PATH).parent
+history_dir.mkdir(parents=True, exist_ok=True)
+logging.info(f"History database directory: {history_dir}")
+
+# --- Build Configuration Dictionary ---
+
+vector_store_config = {}
+
+if VECTOR_STORE_PROVIDER == "qdrant":
+    vector_store_config = {
+        "provider": "qdrant",
+        "config": {
+            "collection_name": QDRANT_COLLECTION,
+            "url": QDRANT_URL,
+            "api_key": QDRANT_API_KEY,
+        }
+    }
+else: # Default/Fallback to pgvector
+    vector_store_config = {
         "provider": "pgvector",
         "config": {
             "host": POSTGRES_HOST,
-            "port": int(POSTGRES_PORT),
+            "port": POSTGRES_PORT,
             "dbname": POSTGRES_DB,
             "user": POSTGRES_USER,
             "password": POSTGRES_PASSWORD,
             "collection_name": POSTGRES_COLLECTION_NAME,
-        },
+        }
+    }
+
+DEFAULT_CONFIG = {
+    "version": "v1.1",
+    "vector_store": vector_store_config,
+    # ปิดการใช้ graph_store ถ้าไม่ต้องการ Neo4j
+    # "graph_store": {
+    #     "provider": "neo4j",
+    #     "config": {"url": NEO4J_URI, "username": NEO4J_USERNAME, "password": NEO4J_PASSWORD},
+    # },
+    "llm": {
+        "provider": "openai",
+        "config": {
+            "api_key": OPENAI_API_KEY,
+            "temperature": 0.2,
+            "model": OPENAI_MODEL,
+            "openai_base_url": OPENAI_BASE_URL,
+        }
     },
-    "graph_store": {
-        "provider": "neo4j",
-        "config": {"url": NEO4J_URI, "username": NEO4J_USERNAME, "password": NEO4J_PASSWORD},
+    # ใช้ Ollama embedder (bge-m3) - เร็วกว่า Hugging Face
+    "embedder": {
+        "provider": "ollama",
+        "config": {
+            "model": OLLAMA_EMBEDDING_MODEL,
+            "ollama_base_url": OLLAMA_BASE_URL,
+        }
     },
-    "llm": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "temperature": 0.2, "model": "gpt-4.1-nano-2025-04-14"}},
-    "embedder": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "model": "text-embedding-3-small"}},
     "history_db_path": HISTORY_DB_PATH,
 }
 
@@ -105,7 +165,7 @@ def add_memory(memory_create: MemoryCreate):
         response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
         return JSONResponse(content=response)
     except Exception as e:
-        logging.exception("Error in add_memory:")  # This will log the full traceback
+        logging.exception("Error in add_memory:")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -151,15 +211,7 @@ def search_memories(search_req: SearchRequest):
 
 @app.put("/memories/{memory_id}", summary="Update a memory")
 def update_memory(memory_id: str, updated_memory: Dict[str, Any]):
-    """Update an existing memory with new content.
-    
-    Args:
-        memory_id (str): ID of the memory to update
-        updated_memory (str): New content to update the memory with
-        
-    Returns:
-        dict: Success message indicating the memory was updated
-    """
+    """Update an existing memory with new content."""
     try:
         return MEMORY_INSTANCE.update(memory_id=memory_id, data=updated_memory)
     except Exception as e:
