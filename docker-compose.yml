@@ -6,11 +6,20 @@ services:
     ports:
       - "8000:8000"
     environment:
-      VECTOR_STORE: qdrant
-      QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION: mem0
+      # ใช้ Config API ที่ถูกต้อง (จำเป็นสำหรับ main.py ที่เราแก้ไป)
+      - VECTOR_STORE=qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=mem0
+      - OPENAI_API_KEY=sk-WIqY-Eg2u9q24jnZ9jbFHw
+      - OPENAI_BASE_URL=https://tokenmind.abdul.in.th/v1
+      - OPENAI_MODEL=ptm-gpt-oss-120b
+      - HISTORY_DB_PATH=/app/history/history.db
+    volumes:
+      # เพิ่ม volume สำหรับ history database
+      - history_data:/app/history
     depends_on:
       - qdrant
+      - ollama
 
   qdrant:
     image: qdrant/qdrant:v1.8.3
@@ -20,6 +29,24 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  # เพิ่ม Ollama service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11435:11435"
+    volumes:
+      - ollama_data:/root/.ollama
+    # ถ้ามี GPU ให้เพิ่มบรรทัดนี้
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # 👇 ส่วน UI Dashboard (Port 3000) จากเวอร์ชันแรก
   openmemory-ui:
     build:
       context: ./openmemory/ui
@@ -27,9 +54,11 @@ services:
     ports:
       - "3000:3000"
     environment:
-      MEM0_API_URL: http://mem0-api:8000
+      - MEM0_API_URL=http://mem0-api:8000
     depends_on:
       - mem0-api
 
 volumes:
   qdrant_data:
+  history_data:
+  ollama_data:
