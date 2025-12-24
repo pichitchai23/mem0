@@ -5,3 +5,4 @@ mem0ai>=0.1.48
 python-dotenv==1.0.1
 psycopg>=3.2.8
 ollama
+qdrant-client==1.11.3
