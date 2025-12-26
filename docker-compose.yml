@@ -19,8 +19,10 @@ services:
     volumes:
       - history_data:/app/history
     depends_on:
-      - qdrant
-      - ollama
+      qdrant:
+        condition: service_healthy  # <--- แก้ไขบรรทัดนี้: รอให้ qdrant สุขภาพดี (พร้อมใช้งาน)
+      ollama:
+        condition: service_started
 
   qdrant:
     image: qdrant/qdrant:v1.12.4
@@ -31,6 +33,14 @@ services:
       - default
     volumes:
       - qdrant_data:/qdrant/storage
+    # --- เพิ่มส่วน Healthcheck นี้เข้าไป ---
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"] 
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    # ------------------------------------
 
   ollama:
     image: ollama/ollama:latest
