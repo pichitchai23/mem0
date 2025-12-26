@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -27,7 +28,6 @@ logging.info("Starting mem0-api...")
 VECTOR_STORE_PROVIDER = os.environ.get("VECTOR_STORE", "qdrant")
 
 # Qdrant Vars
-# แก้ไข: ใช้แค่ URL อย่างเดียว ตัด host/port ทิ้งเพื่อไม่ให้ชนกัน
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "mem0")
@@ -115,6 +115,67 @@ DEFAULT_CONFIG = {
     "history_db_path": HISTORY_DB_PATH,
 }
 
+# --- 🆕 Auto-create Qdrant collection with retry mechanism ---
+def ensure_qdrant_collection(max_retries=5, retry_delay=3):
+    """สร้างหรือตรวจสอบ Qdrant collection พร้อม retry mechanism"""
+    if VECTOR_STORE_PROVIDER != "qdrant":
+        return
+    
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import Distance, VectorParams
+    
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"Attempt {attempt + 1}/{max_retries}: Connecting to Qdrant at {QDRANT_URL}")
+            # เพิ่ม check_compatibility=False เพื่อข้าม version check
+            qdrant_client = QdrantClient(
+                url=QDRANT_URL, 
+                api_key=QDRANT_API_KEY, 
+                timeout=10,
+                check_compatibility=False  # ข้าม version warning
+            )
+            
+            # ทดสอบการเชื่อมต่อก่อน
+            collections = qdrant_client.get_collections().collections
+            collection_names = [c.name for c in collections]
+            logging.info(f"Found existing collections: {collection_names}")
+            
+            if QDRANT_COLLECTION not in collection_names:
+                logging.info(f"Creating Qdrant collection: {QDRANT_COLLECTION}")
+                
+                # สร้าง collection โดยใช้ vector size = 1024 (bge-m3)
+                qdrant_client.create_collection(
+                    collection_name=QDRANT_COLLECTION,
+                    vectors_config=VectorParams(
+                        size=1024,  # bge-m3 embedding dimension
+                        distance=Distance.COSINE
+                    )
+                )
+                logging.info(f"✅ Collection '{QDRANT_COLLECTION}' created successfully")
+            else:
+                logging.info(f"✅ Collection '{QDRANT_COLLECTION}' already exists")
+            
+            # ตรวจสอบอีกครั้งว่าสร้างสำเร็จ (ใช้ attribute ที่ถูกต้อง)
+            collection_info = qdrant_client.get_collection(QDRANT_COLLECTION)
+            # เปลี่ยนจาก vectors_count เป็น points_count
+            points_count = collection_info.points_count if hasattr(collection_info, 'points_count') else 0
+            logging.info(f"Collection info: {points_count} points, status: {collection_info.status}")
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"❌ Attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                logging.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                logging.error(f"Failed to create/verify Qdrant collection after {max_retries} attempts")
+                # เปลี่ยนเป็น warning แทน error เพื่อให้ service ทำงานต่อได้
+                logging.warning("Service will start anyway. Collection may already exist.")
+                return False
+
+# เรียกใช้ฟังก์ชันสร้าง collection
+ensure_qdrant_collection()
 
 MEMORY_INSTANCE = Memory.from_config(DEFAULT_CONFIG)
 
